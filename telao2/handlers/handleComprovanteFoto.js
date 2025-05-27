@@ -10,22 +10,17 @@ exports.handleComprovanteFoto = async (sock, msg) => {
     if (!msg.message?.imageMessage) return;
 
     const legenda = msg.message.imageMessage.caption || '';
-    // Remove caracteres invisíveis e espaços extras
     const cleanLegenda = legenda.replace(/[\u200e\u200f\u2068\u2069]/g, '').trim();
 
-    // Função para normalizar e extrair número local (9 dígitos começando com 8)
     function extrairNumeroLocal(text) {
       const textoSemEspacos = text.replace(/[\s\-\.]/g, '');
       const match = textoSemEspacos.match(/(?:\+?258)?(8\d{8})/);
       return match ? match[1] : null;
     }
 
-    // Extrai número da legenda (quem enviou o comprovante)
     const numeroCompleto = extrairNumeroLocal(cleanLegenda);
-
     const prefixo = numeroCompleto ? numeroCompleto.substring(0, 2) : null;
 
-    // Validação do prefixo só aceita 84 ou 85
     if (numeroCompleto && prefixo !== "84" && prefixo !== "85") {
       await sock.sendMessage(from, {
         react: { text: "❌", key: msg.key }
@@ -39,70 +34,55 @@ exports.handleComprovanteFoto = async (sock, msg) => {
       return;
     }
 
-    // Baixa o conteúdo da imagem
     const stream = await downloadContentFromMessage(msg.message.imageMessage, 'image');
     let buffer = Buffer.alloc(0);
     for await (const chunk of stream) {
       buffer = Buffer.concat([buffer, chunk]);
     }
 
-    // Executa OCR no buffer da imagem
     const { data: { text } } = await Tesseract.recognize(buffer, 'por', {
       logger: m => console.log(m)
     });
 
-    // Normaliza o texto OCR
     const normalizedText = text.replace(/-\s*\n\s*/g, '').replace(/[\u200e\u200f\u2068\u2069]/g, '').trim();
 
     console.log('Texto extraído via OCR (normalizado):', normalizedText);
 
-    // Extrai valor transferido
+    // Busca por elementos-chave
     const valorMatch = normalizedText.match(/Transferiste[\s\S]*?([\d.,]+)MT/i);
     const valorTransferido = valorMatch ? valorMatch[1].replace(',', '.') : null;
 
-    // Extrai ID da transação
     const idMatch = normalizedText.match(/\b([A-Z]{2,3}[0-9A-Z.\-]{6,15})\b/);
     const idTransacao = idMatch ? idMatch[1] : null;
 
-    // --- Atualização principal ---
-    // Extrai o número para o qual foi feita a transferência diretamente do OCR
-    function extrairNumeroDestinoOCR(text) {
-      const match = text.match(/8\d{8}/);
-      return match ? match[0] : null;
-    }
-
-    let numeroTransferido = null;
-
     const trechoNumeroTransferidoMatch = normalizedText.match(/(?:transferido para|para o número)\s*([\d\s\+\-\.]+)/i);
-    if (trechoNumeroTransferidoMatch) {
-      numeroTransferido = extrairNumeroLocal(trechoNumeroTransferidoMatch[1]);
-    }
+    let numeroTransferido = trechoNumeroTransferidoMatch
+      ? extrairNumeroLocal(trechoNumeroTransferidoMatch[1])
+      : null;
 
     if (!numeroTransferido) {
-      numeroTransferido = extrairNumeroDestinoOCR(normalizedText);
+      const match = normalizedText.match(/8\d{8}/);
+      numeroTransferido = match ? match[0] : null;
     }
 
     const numerosValidos = ['872960710', '848619531'];
+    const operadorasEncontradas = /(mpesa|m-pesa|emola|e-mola|bim)/i.test(normalizedText);
 
-    if (!numeroTransferido) {
-      await sock.sendMessage(from, {
-        react: { text: "❌", key: msg.key }
-      });
+    // Lógica de verificação: pelo menos 3 dos 4 elementos devem estar presentes
+    const elementosDetectados = [
+      valorTransferido ? 1 : 0,
+      idTransacao ? 1 : 0,
+      numeroTransferido && numerosValidos.includes(numeroTransferido) ? 1 : 0,
+      operadorasEncontradas ? 1 : 0
+    ];
+    const totalValido = elementosDetectados.reduce((a, b) => a + b, 0);
 
-      await new Promise(resolve => setTimeout(resolve, 20000));
-
-      await sock.sendMessage(from, {
-        text: '🚫 Não foi possível detectar o número de destino válido no comprovante. Por favor, envie um comprovante válido.',
-        contextInfo: {
-          quotedMessage: { imageMessage: msg.message.imageMessage },
-          participant: msg.key.participant || msg.key.remoteJid
-        }
-      });
-
-      console.log('🚫 Número destino não detectado no OCR.');
+    if (totalValido < 2) {
+      console.log('🚫 Imagem ignorada – não parece ser um comprovativo.');
       return;
     }
 
+    // Rejeita caso o número de destino seja inválido
     if (!numerosValidos.includes(numeroTransferido)) {
       await sock.sendMessage(from, {
         react: { text: "❌", key: msg.key }
@@ -121,14 +101,13 @@ exports.handleComprovanteFoto = async (sock, msg) => {
       console.log(`🚫 Transferência para número inválido detectada: ${numeroTransferido}`);
       return;
     }
-    // --- fim atualização principal ---
 
-    // Reage na imagem com ✅
     await sock.sendMessage(from, {
       react: { text: "✅", key: msg.key }
     });
+
     await new Promise(resolve => setTimeout(resolve, 20000));
-    // Mensagem completa para o grupo
+
     let mensagem = `✅ Comprovante recebido`;
 
     if (numeroCompleto) {
@@ -150,10 +129,8 @@ exports.handleComprovanteFoto = async (sock, msg) => {
       }
     });
 
-    // Se não tiver número na legenda, pede o número após enviar a mensagem acima
     if (!numeroCompleto) {
-      await new Promise(resolve => setTimeout(resolve, 2000)); // pequeno delay visual
-
+      await new Promise(resolve => setTimeout(resolve, 2000));
       await sock.sendMessage(from, {
         text: '📲 Por favor, envie o número para qual deseja receber os megas.',
         contextInfo: {
