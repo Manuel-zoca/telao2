@@ -2,7 +2,7 @@ const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBailey
 const QRCode = require("qrcode");
 const { Boom } = require("@hapi/boom");
 const express = require('express');
-const app = express();
+const app = express;
 
 // Handlers
 const { handleMessage } = require("./handlers/messageHandler");
